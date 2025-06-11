@@ -1,0 +1,18 @@
+# Ignore environment variables
+.env
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+
+# VSCode settings (optional)
+.vscode/
+
+# Flask session folders (optional)
+flask_session/
+
+# Virtual environments (optional if you're not tracking your venv)
+venv/
+
+# PDFs (optional — if generated dynamically)
+*.pdf
