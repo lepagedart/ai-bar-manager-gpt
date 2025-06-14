@@ -1,56 +1,53 @@
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from dotenv import load_dotenv
+# rag_retriever.py
+
 import os
-from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
-# Load .env variables
-load_dotenv()
+# Folder where your knowledge base files are stored
+KB_FOLDER = "knowledge_base"
 
-# Path to FAISS index folder
-VECTOR_INDEX_PATH = "codex_faiss_index"
+def build_vectorstore():
+    print("🔍 Building vectorstore from knowledge_base/\n")
 
-# Initialize embedding model
-embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    # Load supported files
+    documents = []
+    for root, _, files in os.walk(KB_FOLDER):
+        for file in files:
+            path = os.path.join(root, file)
+            if file.endswith(".pdf"):
+                loader = PyPDFLoader(path)
+            elif file.endswith(".txt"):
+                loader = TextLoader(path)
+            else:
+                print(f"❌ Skipping unsupported file type: {file}")
+                continue
 
-loader = DirectoryLoader(
-    "./knowledge_base",
-    glob="**/*.pdf",
-    show_progress=True,
-    loader_cls=PyPDFLoader
-)
-docs = loader.load()
-print(f"[DEBUG] Number of documents loaded: {len(docs)}")
-for i, doc in enumerate(docs[:5]):  # Limit output to 5 docs for brevity
-    print(f"[DEBUG] Document {i+1}: {doc.metadata.get('source')}")
-    
-from langchain_community.document_loaders import TextLoader
+            try:
+                docs = loader.load()
+                documents.extend(docs)
+                print(f"✅ Loaded {len(docs)} docs from: {file}")
+            except Exception as e:
+                print(f"❌ Error loading {file}: {e}")
 
-txt_loader = DirectoryLoader(
-    "./knowledge_base",
-    glob="**/*.txt",
-    show_progress=True,
-    loader_cls=TextLoader
-)
+    if not documents:
+        raise ValueError("❌ No valid documents found to embed. Vectorstore not created.")
 
-txt_docs = txt_loader.load()
-print(f"[DEBUG] Number of text documents loaded: {len(txt_docs)}")
-for i, doc in enumerate(txt_docs[:5]):
-    print(f"[DEBUG] Text Document {i+1}: {doc.metadata.get('source')}")
-
-# Load the FAISS vector store from disk
-db = FAISS.load_local(
-    VECTOR_INDEX_PATH,
-    embeddings=embedding_model,
-    allow_dangerous_deserialization=True
-)
-
-# Function to retrieve relevant context based on a query
-def retrieve_codex_context(query: str) -> str:
-    vectorstore = FAISS.load_local(
-        VECTOR_INDEX_PATH,
-        embeddings=HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2"),
-        allow_dangerous_deserialization=True
+    # Chunk the documents
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=750,
+        chunk_overlap=100
     )
-    docs = vectorstore.similarity_search(query, k=3)
-    return "\n\n".join([doc.page_content for doc in docs])
+    chunks = splitter.split_documents(documents)
+    print(f"\n🧩 Total chunks created: {len(chunks)}")
+
+    # Create vectorstore
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    vectorstore = FAISS.from_documents(chunks, embeddings)
+    vectorstore.save_local("vectorstore")
+    print("✅ Vectorstore built and saved to ./vectorstore\n")
+
+if __name__ == "__main__":
+    build_vectorstore()

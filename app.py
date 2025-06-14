@@ -1,4 +1,5 @@
 import os
+import uuid
 from flask import Flask, render_template, request, redirect, session
 from flask_session import Session
 from dotenv import load_dotenv
@@ -12,11 +13,7 @@ app = Flask(__name__)
 app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 
-# Configure OpenRouter client (Meta LLaMA)
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY")
-)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -39,21 +36,22 @@ def index():
         with open("system_prompt.txt", "r") as file:
             system_prompt = file.read()
 
-        # Generate response from LLaMA
+        # Compose final messages
+        messages = [{"role": "system", "content": system_prompt}] + conversation
+
+        # Get AI response
         response = client.chat.completions.create(
-            model="meta-llama/llama-3.3-8b-instruct:free",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                *conversation
-            ]
+            model="gpt-3.5-turbo",
+            messages=messages
         )
+
         result = response.choices[0].message.content.strip()
 
-        # Save response
+        # Update conversation history
         conversation.append({"role": "assistant", "content": result})
         session["conversation"] = conversation
 
-        # Optional: Email + PDF
+        # Optional email + PDF
         if email:
             generate_pdf(result)
             send_email(email, "Raise the Bar - Cocktail Response", result)
