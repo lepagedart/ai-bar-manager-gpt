@@ -1,79 +1,82 @@
 import os
-import pickle
-import hashlib
-from pathlib import Path
-from typing import List
-from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-VECTORSTORE_DIR = "vectorstore"
-VECTORSTORE_FILE = os.path.join(VECTORSTORE_DIR, "faiss_index")
-FILE_HASHES_PATH = os.path.join(VECTORSTORE_DIR, "file_hashes.pkl")
+# Folder where your knowledge base files are stored
+KB_FOLDER = "knowledge_base"
+VECTORSTORE_FILE = "vectorstore"
 
-def compute_file_hash(filepath: str) -> str:
-    hasher = hashlib.md5()
-    with open(filepath, "rb") as f:
-        hasher.update(f.read())
-    return hasher.hexdigest()
+def build_vectorstore():
+    print("\n🔎 Building vectorstore from knowledge_base/\n")
 
-def get_all_file_hashes(folder: str) -> dict:
-    hashes = {}
-    for filename in os.listdir(folder):
-        filepath = os.path.join(folder, filename)
-        if filename.endswith(".pdf") or filename.endswith(".txt"):
-            hashes[filename] = compute_file_hash(filepath)
-    return hashes
-
-def load_documents(knowledge_folder: str) -> List[str]:
     documents = []
-    for filename in os.listdir(knowledge_folder):
-        filepath = os.path.join(knowledge_folder, filename)
-        if filename.endswith(".pdf"):
-            loader = PyPDFLoader(filepath)
-        elif filename.endswith(".txt"):
-            loader = TextLoader(filepath)
-        else:
-            continue
-        documents.extend(loader.load())
-    return documents
+    total_files = 0
+    total_loaded = 0
+    skipped_files = []
 
-def build_vectorstore(documents: List[str]):
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=200)
-    texts = text_splitter.split_documents(documents)
+    # Walk through all folders and files inside knowledge_base/
+    for root, dirs, files in os.walk(KB_FOLDER):
+        for file in files:
+            total_files += 1
+            path = os.path.join(root, file)
 
+            # Handle supported file types
+            if file.endswith(".pdf"):
+                loader = PyPDFLoader(path)
+            elif file.endswith(".txt"):
+                loader = TextLoader(path)
+            else:
+                print(f"⚠️ Skipping unsupported file type: {file}")
+                skipped_files.append(file)
+                continue
+
+            try:
+                docs = loader.load()
+                if len(docs) == 0:
+                    print(f"⚠️ File loaded but returned no documents: {file}")
+                    skipped_files.append(file)
+                else:
+                    documents.extend(docs)
+                    print(f"✅ Loaded {len(docs)} docs from: {file}")
+                    total_loaded += 1
+            except Exception as e:
+                print(f"❌ Error loading file {file}: {e}")
+                skipped_files.append(file)
+
+    print(f"\n📊 Summary: {total_loaded} files successfully loaded out of {total_files}")
+    if skipped_files:
+        print(f"⚠️ Skipped files: {skipped_files}")
+
+    if not documents:
+        raise ValueError("❌ No valid documents found to embed. Vectorstore not created.")
+
+    # Split into chunks
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=750,
+        chunk_overlap=100
+    )
+    chunks = splitter.split_documents(documents)
+    print(f"\n🧩 Total chunks created: {len(chunks)}")
+
+    # Create embeddings
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-    if not os.path.exists(VECTORSTORE_DIR):
-        os.makedirs(VECTORSTORE_DIR)
+    # Create vectorstore and save to disk
+    vectorstore = FAISS.from_documents(chunks, embeddings)
+    vectorstore.save_local(VECTORSTORE_FILE)
+    print("\n✅ Vectorstore built and saved successfully.\n")
 
-    db = FAISS.from_documents(texts, embeddings)
-    db.save_local(VECTORSTORE_FILE)
+# This function is called by app.py automatically on startup
+def check_and_update_vectorstore(knowledge_folder):
+    print("\n🔄 Checking knowledge base and updating vectorstore if needed...\n")
+    build_vectorstore()
 
-def check_and_update_vectorstore(knowledge_folder: str = "knowledge_base"):
-    current_hashes = get_all_file_hashes(knowledge_folder)
-
-    if not os.path.exists(FILE_HASHES_PATH) or not os.path.exists(VECTORSTORE_FILE):
-        print("Vectorstore or hash file missing. Rebuilding vectorstore.")
-        documents = load_documents(knowledge_folder)
-        build_vectorstore(documents)
-        with open(FILE_HASHES_PATH, "wb") as f:
-            pickle.dump(current_hashes, f)
-        return
-
-    with open(FILE_HASHES_PATH, "rb") as f:
-        previous_hashes = pickle.load(f)
-
-    if current_hashes != previous_hashes:
-        print("Changes detected in knowledge base. Rebuilding vectorstore.")
-        documents = load_documents(knowledge_folder)
-        build_vectorstore(documents)
-        with open(FILE_HASHES_PATH, "wb") as f:
-            pickle.dump(current_hashes, f)
-    else:
-        print("No changes in knowledge base. Vectorstore is up to date.")
-
+# If run manually:
+if __name__ == "__main__":
+    build_vectorstore()
+    # Retrieval function called by app.py
 def retrieve_codex_context(prompt: str) -> str:
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     db = FAISS.load_local(VECTORSTORE_FILE, embeddings, allow_dangerous_deserialization=True)
